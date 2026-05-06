@@ -26,8 +26,8 @@ export default function App() {
   const [report, setReport] = useState<QaReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [models, setModels] = useState<{name: string, latency: number}[]>([{name: 'gemini-1.5-flash', latency: 0}]);
-  const [selectedModel, setSelectedModel] = useState<string>('gemini-1.5-flash');
+  const [models, setModels] = useState<{name: string, latency: number}[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const [forceRefresh, setForceRefresh] = useState<boolean>(false);
   const [isDemoRunning, setIsDemoRunning] = useState<boolean>(false);
   const [isPresenting, setIsPresenting] = useState<boolean>(false);

@@ -23,10 +23,6 @@ export class GeminiService {
       return this.cachedModels;
     }
 
-    const defaultFallbackModels = [
-      { name: appConfig.defaultModel, latency: 0 }
-    ];
-
     try {
       const aiClient = this.getClient();
       const response = await aiClient.models.list();
@@ -36,14 +32,14 @@ export class GeminiService {
         fetchedModels.push(m);
       }
 
-      // Filter only gemini models that support vision and are not deprecated/experimental
+      // Filter only models that support generateContent and are not deprecated/experimental
       const rawCandidates = fetchedModels.filter(m => {
-        const name = m.name?.replace('models/', '') || '';
+        const name = m.name || '';
         const methods = m.supportedGenerationMethods || [];
         const isExp = name.toLowerCase().includes('exp') || name.toLowerCase().includes('preview');
-        const isVisionCapable = name.includes('gemini') && (name.includes('1.5') || name.includes('2.0') || name.includes('2.5'));
-        return methods.includes('generateContent') && isVisionCapable && !isExp;
-      }).map(m => m.name.replace('models/', ''));
+        // Do NOT rely on name matching like "gemini-1.5"
+        return methods.includes('generateContent') && !isExp;
+      }).map(m => m.name);
 
       // Remove duplicates if any
       const uniqueCandidates = [...new Set(rawCandidates)];
@@ -83,15 +79,47 @@ export class GeminiService {
         return this.cachedModels;
       }
 
-      return { models: defaultFallbackModels, default: appConfig.defaultModel };
+      throw new Error("No valid Gemini models available for this API key");
     } catch (error) {
-      console.warn('Failed to fetch/validate models, using fallback list:', error);
-      return { models: defaultFallbackModels, default: appConfig.defaultModel };
+      console.warn('Failed to fetch/validate models:', error);
+      throw new Error("No valid Gemini models available for this API key");
+    }
+  }
+
+  private async executeWithFallback<T>(
+    selectedModel: string,
+    operation: (modelName: string) => Promise<T>,
+    operationName: string
+  ): Promise<T> {
+    try {
+      console.log(`[${operationName}] Attempting with model: ${selectedModel}`);
+      const result = await operation(selectedModel);
+      return result;
+    } catch (error) {
+      console.warn(`[${operationName}] Model ${selectedModel} failed:`, error);
+      
+      console.log(`[${operationName}] Getting available models for fallback...`);
+      const { models } = await this.getAvailableModels();
+      
+      const fallbackModels = models
+        .map(m => m.name)
+        .filter(m => m !== selectedModel);
+      
+      for (const fallbackModel of fallbackModels) {
+        try {
+          console.log(`[${operationName}] Attempting fallback with model: ${fallbackModel}`);
+          const result = await operation(fallbackModel);
+          return result;
+        } catch (fallbackError) {
+          console.warn(`[${operationName}] Fallback model ${fallbackModel} failed:`, fallbackError);
+        }
+      }
+      
+      throw new Error("No valid Gemini models available for this API key");
     }
   }
 
   async explainIssue(issue: any, modelName?: string): Promise<{ explanation: string, fix_suggestion: string }> {
-    const aiClient = this.getClient();
     let selectedModel = modelName || appConfig.defaultModel;
 
     const promptText = `You are a Senior QA Engineer and Frontend Developer.
@@ -104,15 +132,22 @@ Description: ${issue.description}
 Provide your response in JSON format with exactly two properties: "explanation" and "fix_suggestion".`;
 
     try {
-      const response = await aiClient.models.generateContent({
-        model: selectedModel,
-        contents: promptText,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.2, // Low temp for more factual fix
-        }
-      });
-      const responseText = response.text || '{ "explanation": "Failed to generate explanation.", "fix_suggestion": "" }';
+      const responseText = await this.executeWithFallback(
+        selectedModel,
+        async (mName) => {
+          const aiClient = this.getClient();
+          const response = await aiClient.models.generateContent({
+            model: mName,
+            contents: promptText,
+            config: {
+              responseMimeType: "application/json",
+              temperature: 0.2, // Low temp for more factual fix
+            }
+          });
+          return response.text || '{ "explanation": "Failed to generate explanation.", "fix_suggestion": "" }';
+        },
+        'explainIssue'
+      );
       return JSON.parse(responseText);
     } catch (error) {
       console.error('Error explaining issue with Gemini:', error);
@@ -121,7 +156,6 @@ Provide your response in JSON format with exactly two properties: "explanation" 
   }
 
   async generateExecutiveSummary(data: any, modelName?: string): Promise<string> {
-    const aiClient = this.getClient();
     let selectedModel = modelName || appConfig.defaultModel;
 
     const promptText = `You are a Senior QA Lead / Product Quality Analyst.
@@ -138,14 +172,22 @@ ${data.key_issues.map((i: any) => `  * [${i.severity}] ${i.title}: ${i.descripti
 Provide ONLY the summary text, no surrounding markdown formatting or additional explanation.`;
 
     try {
-      const response = await aiClient.models.generateContent({
-        model: selectedModel,
-        contents: promptText,
-        config: {
-          temperature: 0.3, 
-        }
-      });
-      return response.text || "Executive summary unavailable.";
+      const responseText = await this.executeWithFallback(
+        selectedModel,
+        async (mName) => {
+          const aiClient = this.getClient();
+          const response = await aiClient.models.generateContent({
+            model: mName,
+            contents: promptText,
+            config: {
+              temperature: 0.3, 
+            }
+          });
+          return response.text || "Executive summary unavailable.";
+        },
+        'generateExecutiveSummary'
+      );
+      return responseText;
     } catch (error) {
       console.error('Error generating executive summary with Gemini:', error);
       return "Executive summary unavailable.";
@@ -154,8 +196,8 @@ Provide ONLY the summary text, no surrounding markdown formatting or additional 
 
   async analyzeScreenshot(screenshotBuffer: Buffer, modelName?: string): Promise<GeminiAnalysisResult> {
     console.log('Sending to Gemini for analysis...');
-    const aiClient = this.getClient();
     let selectedModel = modelName || appConfig.defaultModel;
+
     const promptText = `You are a Senior QA Engineer.
 Analyze this UI screenshot and detect:
 - Broken buttons/links
@@ -183,45 +225,34 @@ Expected format:
     let responseText = '';
     
     try {
-      const response = await aiClient.models.generateContent({
-        model: selectedModel,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: promptText },
-              { inlineData: { mimeType: 'image/png', data: screenshotBuffer.toString('base64') } }
-            ]
-          }
-        ],
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.1
-        }
-      });
-      responseText = response.text || '{ "issues": [] }';
+      responseText = await this.executeWithFallback(
+        selectedModel,
+        async (mName) => {
+          const aiClient = this.getClient();
+          const response = await aiClient.models.generateContent({
+            model: mName,
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { text: promptText },
+                  { inlineData: { mimeType: 'image/png', data: screenshotBuffer.toString('base64') } }
+                ]
+              }
+            ],
+            config: {
+              responseMimeType: 'application/json',
+              temperature: 0.1
+            }
+          });
+          return response.text || '{ "issues": [] }';
+        },
+        'analyzeScreenshot'
+      );
     } catch (error) {
-      console.warn(`Model ${selectedModel} failed. Falling back to default model (${appConfig.defaultModel}). Error:`, error);
-      console.log('Model fallback triggered');
-      selectedModel = appConfig.defaultModel;
-      // Attempt fallback safely
-      const fallbackResponse = await aiClient.models.generateContent({
-        model: selectedModel,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: promptText },
-              { inlineData: { mimeType: 'image/png', data: screenshotBuffer.toString('base64') } }
-            ]
-          }
-        ],
-        config: {
-          responseMimeType: 'application/json',
-          temperature: 0.1
-        }
-      });
-      responseText = fallbackResponse.text || '{ "issues": [] }';
+      console.error('Failed to analyze screenshot, all models failed', error);
+      // Let it fall through with empty issues array
+      responseText = '{ "issues": [] }';
     }
 
     console.log('Received response from Gemini');
