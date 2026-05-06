@@ -34,17 +34,33 @@ export class GeminiService {
 
       // Filter only models that support generateContent and are not deprecated/experimental
       const rawCandidates = fetchedModels.filter(m => {
-        const name = m.name || '';
+        const name = (m.name || '').toLowerCase();
         const methods = m.supportedGenerationMethods || [];
-        const isExp = name.toLowerCase().includes('exp') || name.toLowerCase().includes('preview');
+        const isExp = name.includes('exp') || name.includes('preview');
         // Do NOT rely on name matching like "gemini-1.5"
         return methods.includes('generateContent') && !isExp;
-      }).map(m => m.name);
+      });
 
-      // Remove duplicates if any
-      const uniqueCandidates = [...new Set(rawCandidates)];
+      // Prioritize models that likely support images (multimodal)
+      rawCandidates.sort((a, b) => {
+         const descA = (a.description || a.displayName || a.name || '').toLowerCase();
+         const descB = (b.description || b.displayName || b.name || '').toLowerCase();
+         
+         const scoreA = (descA.includes('vision') || descA.includes('image') || descA.includes('multimodal')) ? 1 : 0;
+         const scoreB = (descB.includes('vision') || descB.includes('image') || descB.includes('multimodal')) ? 1 : 0;
+         
+         if (scoreA !== scoreB) {
+           return scoreB - scoreA;
+         }
+         
+         // Fallback alphabetical sort descending (newer models like 2.x often come before 1.x or legacy in descending sort)
+         return (b.name || '').localeCompare(a.name || '');
+      });
 
-      // Limit validation load to first 6 candidates
+      // Extract unique model names while preserving priority order
+      const uniqueCandidates = [...new Set(rawCandidates.map(m => m.name))];
+
+      // Limit validation load to first 6 top priority candidates
       const candidatesToTest = uniqueCandidates.slice(0, 6);
 
       // Tiny invisible transparent PNG to validate multimodal capability securely
