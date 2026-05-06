@@ -147,6 +147,27 @@ export class OrchestratorService {
     } else {
       summary = 'Significant issues found';
     }
+
+    // Prepare data for executive summary
+    const allIssuesForSummary = pageReports.flatMap(r => r ? r.issues : []).filter(Boolean);
+    
+    const severityMap: Record<string, number> = { 'High': 3, 'Medium': 2, 'Low': 1 };
+    const sortedIssues = [...allIssuesForSummary].sort((a, b) => 
+      (severityMap[b.severity] || 0) - (severityMap[a.severity] || 0)
+    );
+    const topIssues = sortedIssues.slice(0, 5);
+
+    let executive_summary = '';
+    try {
+       executive_summary = await this.geminiService.generateExecutiveSummary({
+         total_issues: totalIssues,
+         score,
+         issue_summary,
+         key_issues: topIssues
+       }, modelName);
+    } catch (e) {
+       console.error("Error generating executive summary in orchestrator", e);
+    }
     
     return {
       url: startUrl,
@@ -154,6 +175,7 @@ export class OrchestratorService {
       total_issues: totalIssues,
       score,
       summary,
+      executive_summary,
       logs,
       issue_summary,
       pages: pageReports

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Play, AlertCircle, AlertTriangle, CheckCircle, Search, Loader2, History, X } from 'lucide-react';
+import { Play, AlertCircle, AlertTriangle, CheckCircle, Search, Loader2, History, X, Sparkles } from 'lucide-react';
 import { Issue, QaReport, HistoryRun } from './types';
 
 // Hook for fake uptime
@@ -26,7 +26,7 @@ export default function App() {
   const [report, setReport] = useState<QaReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [models, setModels] = useState<string[]>(['gemini-1.5-flash', 'gemini-1.5-pro']);
+  const [models, setModels] = useState<{name: string, latency: number}[]>([{name: 'gemini-1.5-flash', latency: 0}]);
   const [selectedModel, setSelectedModel] = useState<string>('gemini-1.5-flash');
   const [forceRefresh, setForceRefresh] = useState<boolean>(false);
   const [isDemoRunning, setIsDemoRunning] = useState<boolean>(false);
@@ -61,9 +61,9 @@ export default function App() {
     fetch('/api/models')
       .then(res => res.json())
       .then(data => {
-        if (data.models) {
+        if (data.models && data.models.length > 0) {
           setModels(data.models);
-          setSelectedModel(data.default || data.models[0]);
+          setSelectedModel(data.default || data.models[0].name);
         }
       })
       .catch(err => console.error("Failed to fetch models:", err));
@@ -282,7 +282,9 @@ export default function App() {
                   className="w-full bg-black border border-slate-700 rounded text-xs text-white p-1 outline-none focus:border-emerald-500 disabled:opacity-50"
                 >
                   {models.map(m => (
-                    <option key={m} value={m}>{m}</option>
+                    <option key={m.name} value={m.name}>
+                      {m.name} {m.latency ? `(${m.latency} ms)` : ''}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -408,6 +410,20 @@ export default function App() {
           )}
 
           {report && !isPresenting && (
+            <div className="mb-6">
+              {report.executive_summary && (
+                <div className="bg-slate-800/80 border border-indigo-500/50 rounded-xl p-5 shadow-lg">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Sparkles className="w-5 h-5 text-indigo-400" />
+                    <h3 className="text-sm font-bold tracking-widest uppercase text-indigo-400">AI Executive Summary</h3>
+                  </div>
+                  <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap">{report.executive_summary}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {report && !isPresenting && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {allIssues.length === 0 ? (
                 <div className="col-span-full border border-emerald-500/50 bg-emerald-500/10 p-6 rounded-lg text-emerald-400 font-mono text-sm">
@@ -511,6 +527,17 @@ export default function App() {
             <div className="max-w-6xl mx-auto space-y-16 pb-16 pt-8 animate-in fade-in duration-700">
               <div className="text-center">
                 <h1 className="text-4xl font-bold text-slate-100 mb-10">{(() => { try { return new URL(url).hostname } catch { return url || 'Audit Report' } })()}</h1>
+                
+                {report.executive_summary && (
+                  <div className="max-w-4xl mx-auto mb-10 bg-slate-800/80 border border-indigo-500/50 rounded-2xl p-8 shadow-xl text-left">
+                    <div className="flex items-center gap-3 mb-4 justify-center">
+                      <Sparkles className="w-6 h-6 text-indigo-400" />
+                      <h3 className="text-lg font-bold tracking-widest uppercase text-indigo-400">AI Executive Summary</h3>
+                    </div>
+                    <p className="text-slate-300 text-lg leading-relaxed whitespace-pre-wrap text-center">{report.executive_summary}</p>
+                  </div>
+                )}
+
                 <div className={`inline-flex items-center justify-center w-56 h-56 rounded-full border-[12px] text-8xl font-black mb-10 shadow-2xl ${report.score >= 90 ? 'border-emerald-500 text-emerald-400 shadow-emerald-900/40' : report.score >= 70 ? 'border-amber-500 text-amber-500 shadow-amber-900/40' : 'border-rose-500 text-rose-500 shadow-rose-900/40'}`}>
                   {report.score}
                 </div>

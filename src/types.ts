@@ -28,6 +28,7 @@ export interface QaReport {
   total_issues: number;
   score: number;
   summary: string;
+  executive_summary?: string;
   logs: string[];
   issue_summary: IssueSummary;
   pages: PageReport[];

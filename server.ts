@@ -96,7 +96,7 @@ async function startServer() {
     }
 
     try {
-      const explanation = await gemini.explainIssue(issue, model);
+      const explanation = await geminiService.explainIssue(issue, model);
       res.json(explanation);
     } catch (error: any) {
       console.error('Explain Issue Error:', error);

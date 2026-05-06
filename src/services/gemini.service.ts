@@ -4,6 +4,8 @@ import { appConfig } from '../config/app.config.js';
 
 export class GeminiService {
   private ai: GoogleGenAI | null = null;
+  private cachedModels: { models: { name: string, latency: number }[], default: string } | null = null;
+  private cacheTimestamp: number = 0;
 
   private getClient(): GoogleGenAI {
     if (!this.ai) {
@@ -16,37 +18,75 @@ export class GeminiService {
     return this.ai;
   }
 
-  async getAvailableModels(): Promise<{ models: string[], default: string }> {
-    const defaultModels = ['gemini-1.5-flash', 'gemini-1.5-pro'];
-    const preferredDefault = appConfig.defaultModel;
+  async getAvailableModels(): Promise<{ models: { name: string, latency: number }[], default: string }> {
+    if (this.cachedModels && Date.now() - this.cacheTimestamp < 10 * 60 * 1000) {
+      return this.cachedModels;
+    }
+
+    const defaultFallbackModels = [
+      { name: appConfig.defaultModel, latency: 0 }
+    ];
 
     try {
       const aiClient = this.getClient();
       const response = await aiClient.models.list();
       
-      let fetchedModels: string[] = [];
+      let fetchedModels: any[] = [];
       for await (const m of response) {
-        if (m.name) {
-          fetchedModels.push(m.name.replace('models/', ''));
+        fetchedModels.push(m);
+      }
+
+      // Filter only gemini models that support vision and are not deprecated/experimental
+      const rawCandidates = fetchedModels.filter(m => {
+        const name = m.name?.replace('models/', '') || '';
+        const methods = m.supportedGenerationMethods || [];
+        const isExp = name.toLowerCase().includes('exp') || name.toLowerCase().includes('preview');
+        const isVisionCapable = name.includes('gemini') && (name.includes('1.5') || name.includes('2.0') || name.includes('2.5'));
+        return methods.includes('generateContent') && isVisionCapable && !isExp;
+      }).map(m => m.name.replace('models/', ''));
+
+      // Remove duplicates if any
+      const uniqueCandidates = [...new Set(rawCandidates)];
+
+      // Validate and compute latency for each model concurrently
+      const validModels: { name: string, latency: number }[] = [];
+      
+      await Promise.all(uniqueCandidates.map(async (modelName) => {
+        const startTime = Date.now();
+        try {
+          // lightweight call to generateContent
+          const testRes = await aiClient.models.generateContent({
+             model: modelName,
+             contents: "Test",
+             config: { maxOutputTokens: 1, temperature: 0 }
+          });
+          if (testRes && testRes.text) {
+             const latency = Date.now() - startTime;
+             validModels.push({ name: modelName, latency });
+          }
+        } catch (e) {
+          // Validation failed or not accessible
+          console.warn(`Model ${modelName} failed validation:`, e);
         }
-      }
+      }));
 
-      // Filter only gemini models that support vision (1.5/2.x)
-      const safeModels = fetchedModels.filter(name => 
-        name.includes('gemini') && 
-        (name.includes('1.5') || (name.includes('2.0') && !name.includes('gemini-2.0-flash-exp')) || name.includes('2.5'))
-      );
+      if (validModels.length > 0) {
+        // Sort by latency DESC (slowest first)
+        validModels.sort((a, b) => b.latency - a.latency);
+        const defaultModelName = validModels[0].name;
 
-      if (safeModels.length > 0) {
-        return {
-          models: safeModels,
-          default: safeModels.includes(preferredDefault) ? preferredDefault : safeModels[0]
+        this.cachedModels = {
+          models: validModels,
+          default: defaultModelName
         };
+        this.cacheTimestamp = Date.now();
+        return this.cachedModels;
       }
-      return { models: defaultModels, default: preferredDefault };
+
+      return { models: defaultFallbackModels, default: appConfig.defaultModel };
     } catch (error) {
-      console.warn('Failed to fetch models, using fallback list:', error);
-      return { models: defaultModels, default: preferredDefault };
+      console.warn('Failed to fetch/validate models, using fallback list:', error);
+      return { models: defaultFallbackModels, default: appConfig.defaultModel };
     }
   }
 
@@ -77,6 +117,38 @@ Provide your response in JSON format with exactly two properties: "explanation" 
     } catch (error) {
       console.error('Error explaining issue with Gemini:', error);
       throw error;
+    }
+  }
+
+  async generateExecutiveSummary(data: any, modelName?: string): Promise<string> {
+    const aiClient = this.getClient();
+    let selectedModel = modelName || appConfig.defaultModel;
+
+    const promptText = `You are a Senior QA Lead / Product Quality Analyst.
+Please provide a concise executive summary (3-5 lines) of the following QA report in business-friendly (non-technical) language.
+Focus on the overall quality, key risk areas, and top recommendations.
+
+Report Data:
+- Total Issues: ${data.total_issues}
+- Overall Score: ${data.score}/100
+- Issue Breakdown: UI (${data.issue_summary.UI}), Functional (${data.issue_summary.Functional}), Layout (${data.issue_summary.Layout}), Accessibility (${data.issue_summary.Accessibility})
+- Top Issues:
+${data.key_issues.map((i: any) => `  * [${i.severity}] ${i.title}: ${i.description}`).join('\n')}
+
+Provide ONLY the summary text, no surrounding markdown formatting or additional explanation.`;
+
+    try {
+      const response = await aiClient.models.generateContent({
+        model: selectedModel,
+        contents: promptText,
+        config: {
+          temperature: 0.3, 
+        }
+      });
+      return response.text || "Executive summary unavailable.";
+    } catch (error) {
+      console.error('Error generating executive summary with Gemini:', error);
+      return "Executive summary unavailable.";
     }
   }
 
