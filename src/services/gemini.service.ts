@@ -44,36 +44,58 @@ export class GeminiService {
       // Remove duplicates if any
       const uniqueCandidates = [...new Set(rawCandidates)];
 
-      // Validate and compute latency for each model concurrently
-      const validModels: { name: string, latency: number }[] = [];
-      
-      await Promise.all(uniqueCandidates.map(async (modelName) => {
+      // Limit validation load to first 6 candidates
+      const candidatesToTest = uniqueCandidates.slice(0, 6);
+
+      // Tiny invisible transparent PNG to validate multimodal capability securely
+      const tinyImageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+      // Validate and compute latency for each model concurrently (No mutating array inside map)
+      const validationResults = await Promise.all(candidatesToTest.map(async (modelName) => {
         const startTime = Date.now();
         try {
-          // lightweight call to generateContent
+          // lightweight call to generateContent with an image to verify multimodal support
           const testRes = await aiClient.models.generateContent({
              model: modelName,
-             contents: "Test",
+             contents: [
+               {
+                 role: 'user',
+                 parts: [
+                   { text: "Reply 'OK'" },
+                   { inlineData: { mimeType: 'image/png', data: tinyImageBase64 } }
+                 ]
+               }
+             ],
              config: { maxOutputTokens: 1, temperature: 0 }
           });
           if (testRes && testRes.text) {
              const latency = Date.now() - startTime;
-             validModels.push({ name: modelName, latency });
+             return { name: modelName, latency };
           }
         } catch (e) {
-          // Validation failed or not accessible
+          // Validation failed or model doesn't support multimodal
           console.warn(`Model ${modelName} failed validation:`, e);
         }
+        return null;
       }));
 
+      const validModels = validationResults.filter((r): r is { name: string, latency: number } => r !== null);
+
       if (validModels.length > 0) {
-        // Sort by latency DESC (slowest first)
+        // Sort by latency DESC (slowest first for highest quality)
         validModels.sort((a, b) => b.latency - a.latency);
-        const defaultModelName = validModels[0].name;
+        
+        let bestDefault = validModels[0];
+        
+        // Select best balanced model (slowest that is under 3000ms if possible)
+        const balancedModels = validModels.filter(m => m.latency < 3000);
+        if (balancedModels.length > 0) {
+           bestDefault = balancedModels[0]; // Takes the slowest among those under 3000ms
+        }
 
         this.cachedModels = {
           models: validModels,
-          default: defaultModelName
+          default: bestDefault.name
         };
         this.cacheTimestamp = Date.now();
         return this.cachedModels;

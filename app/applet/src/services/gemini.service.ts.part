@@ -1,0 +1,115 @@
+import { GoogleGenAI } from '@google/genai';
+import { GeminiAnalysisResult } from '../types.js';
+import { appConfig } from '../config/app.config.js';
+
+export class GeminiService {
+  private ai: GoogleGenAI | null = null;
+  private cachedModels: { models: { name: string, latency: number }[], default: string } | null = null;
+  private cacheTimestamp: number = 0;
+
+  private getClient(): GoogleGenAI {
+    if (!this.ai) {
+      const key = process.env.GEMINI_API_KEY;
+      if (!key) {
+        throw new Error('GEMINI_API_KEY environment variable is required');
+      }
+      this.ai = new GoogleGenAI({ apiKey: key });
+    }
+    return this.ai;
+  }
+
+  async getAvailableModels(): Promise<{ models: { name: string, latency: number }[], default: string }> {
+    if (this.cachedModels && Date.now() - this.cacheTimestamp < 10 * 60 * 1000) {
+      return this.cachedModels;
+    }
+
+    try {
+      const aiClient = this.getClient();
+      const response = await aiClient.models.list();
+      
+      let fetchedModels: any[] = [];
+      for await (const m of response) {
+        fetchedModels.push(m);
+      }
+
+      // Filter only models that support generateContent and are not deprecated/experimental
+      const rawCandidates = fetchedModels.filter(m => {
+        const name = m.name || '';
+        const methods = m.supportedGenerationMethods || [];
+        const isExp = name.toLowerCase().includes('exp') || name.toLowerCase().includes('preview');
+        // Do NOT rely on name matching like "gemini-1.5"
+        return methods.includes('generateContent') && !isExp;
+      }).map(m => m.name);
+
+      // Remove duplicates if any
+      const uniqueCandidates = [...new Set(rawCandidates)];
+
+      // Limit validation load to first 6 candidates to conserve resources/time
+      const candidatesToTest = uniqueCandidates.slice(0, 6);
+
+      // Tiny 1x1 invisible transparent PNG to validate multimodal capability
+      const tinyImageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+      // Validate and compute latency for each model concurrently safely
+      const validationResults = await Promise.all(candidatesToTest.map(async (modelName) => {
+        const startTime = Date.now();
+        try {
+          // lightweight call to generateContent with an image to verify multimodal support
+          const testRes = await aiClient.models.generateContent({
+             model: modelName,
+             contents: [
+               {
+                 role: 'user',
+                 parts: [
+                   { text: "Reply 'OK' if you see this." },
+                   { inlineData: { mimeType: 'image/png', data: tinyImageBase64 } }
+                 ]
+               }
+             ],
+             config: { maxOutputTokens: 1, temperature: 0 }
+          });
+          
+          if (testRes && testRes.text) {
+             const latency = Date.now() - startTime;
+             return { name: modelName, latency };
+          }
+        } catch (e) {
+          // Validation failed or model doesn't support multimodal
+          console.warn(`Model ${modelName} failed validation (multimodal test):`, e);
+        }
+        return null;
+      }));
+
+      const validModels = validationResults.filter((r): r is { name: string, latency: number } => r !== null);
+
+      if (validModels.length > 0) {
+        // Sort by latency DESC (slowest first)
+        validModels.sort((a, b) => b.latency - a.latency);
+        
+        // Select best balanced model (slowest that is under 3000ms, otherwise slowest)
+        let bestBalanced = validModels[0];
+        const under3k = validModels.filter(m => m.latency < 3000);
+        if (under3k.length > 0) {
+           bestBalanced = under3k[0]; // because it's already sorted by slowest first it brings the slowest one under 3k
+        }
+
+        this.cachedModels = {
+          models: validModels,
+          default: bestBalanced.name
+        };
+        this.cacheTimestamp = Date.now();
+        return this.cachedModels;
+      }
+
+      throw new Error("No valid Gemini models available for this API key");
+    } catch (error) {
+      console.warn('Failed to fetch/validate models:', error);
+      throw new Error("No valid Gemini models available for this API key");
+    }
+  }
+
+  private async executeWithFallback<T>(
+    selectedModel: string,
+    operation: (modelName: string) => Promise<T>,
+    operationName: string
+  ): Promise<T> {
