@@ -1,0 +1,6 @@
+{
+  "name": "AI-Powered Autonomous QA Explorer",
+  "description": "Automated QA testing tool using Playwright and Google Gemini to detect UI issues on websites.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
