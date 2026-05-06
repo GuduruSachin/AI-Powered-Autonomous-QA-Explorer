@@ -4,7 +4,7 @@ import { appConfig } from '../config/app.config.js';
 
 export class GeminiService {
   private ai: GoogleGenAI | null = null;
-  private cachedModels: { models: { name: string, latency: number }[], default: string } | null = null;
+  private cachedModels: { models: { name: string, latency: number, source?: string }[], default: string } | null = null;
   private cacheTimestamp: number = 0;
 
   private getClient(): GoogleGenAI {
@@ -18,108 +18,95 @@ export class GeminiService {
     return this.ai;
   }
 
-  async getAvailableModels(): Promise<{ models: { name: string, latency: number }[], default: string }> {
+  async getAvailableModels(): Promise<{ models: { name: string, latency: number, source?: string }[], default: string }> {
     if (this.cachedModels && Date.now() - this.cacheTimestamp < 10 * 60 * 1000) {
       return this.cachedModels;
     }
 
     try {
-      const aiClient = this.getClient();
-      const response = await aiClient.models.list();
-      
-      let fetchedModels: any[] = [];
-      for await (const m of response) {
-        fetchedModels.push(m);
+      const key = process.env.GEMINI_API_KEY;
+      if (!key) {
+        throw new Error('GEMINI_API_KEY environment variable is required');
       }
 
-      // Filter only models that support generateContent and are not deprecated/experimental
-      const rawCandidates = fetchedModels.filter(m => {
-        const name = (m.name || '').toLowerCase();
+      console.log("Fetching dynamic models via REST API...");
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch models from API: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      const fetchedModels = data.models || [];
+
+      // Filter models that support generateContent and exclude experimental models to save testing time
+      let rawCandidates = fetchedModels.filter((m: any) => {
         const methods = m.supportedGenerationMethods || [];
+        const name = (m.name || '').toLowerCase();
         const isExp = name.includes('exp') || name.includes('preview');
-        // Do NOT rely on name matching like "gemini-1.5"
         return methods.includes('generateContent') && !isExp;
       });
 
-      // Prioritize models that likely support images (multimodal)
-      rawCandidates.sort((a, b) => {
-         const descA = (a.description || a.displayName || a.name || '').toLowerCase();
-         const descB = (b.description || b.displayName || b.name || '').toLowerCase();
-         
-         const scoreA = (descA.includes('vision') || descA.includes('image') || descA.includes('multimodal')) ? 1 : 0;
-         const scoreB = (descB.includes('vision') || descB.includes('image') || descB.includes('multimodal')) ? 1 : 0;
-         
-         if (scoreA !== scoreB) {
-           return scoreB - scoreA;
-         }
-         
-         // Fallback alphabetical sort descending (newer models like 2.x often come before 1.x or legacy in descending sort)
-         return (b.name || '').localeCompare(a.name || '');
+      // Prioritize some well-known model families so they get tested first (since testing takes time)
+      rawCandidates.sort((a: any, b: any) => {
+         const nameA = (a.name || '').toLowerCase();
+         const nameB = (b.name || '').toLowerCase();
+         // highest priority to current gen
+         const scoreA = nameA.includes('1.5') || nameA.includes('2.0') || nameA.includes('2.5') ? 1 : 0;
+         const scoreB = nameB.includes('1.5') || nameB.includes('2.0') || nameB.includes('2.5') ? 1 : 0;
+         if (scoreA !== scoreB) return scoreB - scoreA;
+         return nameB.localeCompare(nameA);
       });
 
-      // Extract unique model names while preserving priority order
-      const uniqueCandidates = [...new Set(rawCandidates.map(m => m.name))];
-
-      // Limit validation load to first 6 top priority candidates
-      const candidatesToTest = uniqueCandidates.slice(0, 6);
-
-      // Tiny invisible transparent PNG to validate multimodal capability securely
-      const tinyImageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-
-      // Validate and compute latency for each model concurrently (No mutating array inside map)
+      const uniqueCandidates = [...new Set(rawCandidates.map((m: any) => m.name))];
+      
+      // Limit validation load to top 5 candidates to stay fast and avoid rate limits
+      const candidatesToTest = uniqueCandidates.slice(0, 5) as string[];
+      
+      const aiClient = this.getClient();
+      // Validate and compute latency for each model safely
       const validationResults = await Promise.all(candidatesToTest.map(async (modelName) => {
         const startTime = Date.now();
         try {
-          // lightweight call to generateContent with an image to verify multimodal support
+          // A clean model name without prefix if needed, but getClient/generateContent uses 'modelName'
+          const cleanModelName = modelName.replace('models/', '');
           const testRes = await aiClient.models.generateContent({
-             model: modelName,
-             contents: [
-               {
-                 role: 'user',
-                 parts: [
-                   { text: "Reply 'OK'" },
-                   { inlineData: { mimeType: 'image/png', data: tinyImageBase64 } }
-                 ]
-               }
-             ],
+             model: cleanModelName,
+             contents: "Test",
              config: { maxOutputTokens: 1, temperature: 0 }
           });
+          
           if (testRes && testRes.text) {
              const latency = Date.now() - startTime;
-             return { name: modelName, latency };
+             return { name: modelName, latency, source: 'API Verified' };
           }
         } catch (e) {
-          // Validation failed or model doesn't support multimodal
           console.warn(`Model ${modelName} failed validation:`, e);
         }
         return null;
       }));
 
-      const validModels = validationResults.filter((r): r is { name: string, latency: number } => r !== null);
+      const validModels = validationResults.filter((r): r is { name: string, latency: number, source: string } => r !== null);
 
       if (validModels.length > 0) {
-        // Sort by latency DESC (slowest first for highest quality)
-        validModels.sort((a, b) => b.latency - a.latency);
+        // Sort by latency ASC (fastest first)
+        validModels.sort((a, b) => a.latency - b.latency);
         
-        let bestDefault = validModels[0];
-        
-        // Select best balanced model (slowest that is under 3000ms if possible)
-        const balancedModels = validModels.filter(m => m.latency < 3000);
-        if (balancedModels.length > 0) {
-           bestDefault = balancedModels[0]; // Takes the slowest among those under 3000ms
-        }
+        // Pick best default based on latency
+        const defaultName = validModels[0].name;
+
+        console.log("Verified models found:", validModels.map(m => m.name).join(', '));
 
         this.cachedModels = {
           models: validModels,
-          default: bestDefault.name
+          default: defaultName
         };
         this.cacheTimestamp = Date.now();
         return this.cachedModels;
       }
-
-      throw new Error("No valid Gemini models available for this API key");
+      
+      throw new Error("No validation successful for fetched models");
     } catch (error) {
-      console.warn('Failed to fetch/validate models:', error);
+      console.warn('Dynamic fetch and validation failed:', error);
       throw new Error("No valid Gemini models available for this API key");
     }
   }

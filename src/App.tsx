@@ -283,7 +283,7 @@ export default function App() {
                 >
                   {models.map(m => (
                     <option key={m.name} value={m.name}>
-                      {m.name} {m.latency ? `(${m.latency} ms)` : ''}
+                      {m.name} {m.source ? `(${m.source})` : ''}
                     </option>
                   ))}
                 </select>
