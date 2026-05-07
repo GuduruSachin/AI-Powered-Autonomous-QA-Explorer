@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Play, AlertCircle, AlertTriangle, CheckCircle, Search, Loader2, History, X, Sparkles } from 'lucide-react';
+import { Play, AlertCircle, AlertTriangle, CheckCircle, Search, Loader2, History, X, Sparkles, ShieldCheck } from 'lucide-react';
 import { Issue, QaReport, HistoryRun } from './types';
 
 // Hook for fake uptime
@@ -36,6 +36,7 @@ export default function App() {
   const [historyRuns, setHistoryRuns] = useState<HistoryRun[]>([]);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [explanations, setExplanations] = useState<Record<string, { explanation: string, fix_suggestion: string, loading: boolean }>>({});
+  const [modalExplanation, setModalExplanation] = useState<{ issue: string, data: any } | null>(null);
 
   const uptime = useUptime();
 
@@ -136,7 +137,11 @@ export default function App() {
   };
 
   const handleExplainIssue = async (issue: Issue, indexKey: string) => {
-    if (explanations[indexKey] && (explanations[indexKey].explanation || explanations[indexKey].loading)) return;
+    if (explanations[indexKey] && explanations[indexKey].explanation) {
+      setModalExplanation({ issue: issue.description, data: explanations[indexKey] });
+      return;
+    }
+    if (explanations[indexKey] && explanations[indexKey].loading) return;
 
     setExplanations(prev => ({ ...prev, [indexKey]: { explanation: '', fix_suggestion: '', loading: true } }));
 
@@ -150,9 +155,12 @@ export default function App() {
       if (!response.ok) throw new Error(data.error);
 
       setExplanations(prev => ({ ...prev, [indexKey]: { ...data, loading: false } }));
+      setModalExplanation({ issue: issue.description, data });
     } catch (error: any) {
       console.error(error);
-      setExplanations(prev => ({ ...prev, [indexKey]: { explanation: 'Error: ' + error.message, fix_suggestion: '', loading: false } }));
+      const errorData = { explanation: 'Error: ' + error.message, fix_suggestion: '', loading: false };
+      setExplanations(prev => ({ ...prev, [indexKey]: errorData }));
+      setModalExplanation({ issue: issue.description, data: errorData });
     }
   };
 
@@ -417,7 +425,9 @@ export default function App() {
                     <Sparkles className="w-5 h-5 text-indigo-400" />
                     <h3 className="text-sm font-bold tracking-widest uppercase text-indigo-400">AI Executive Summary</h3>
                   </div>
-                  <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap">{report.executive_summary}</p>
+                  <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap">
+                    {typeof report.executive_summary === 'string' ? report.executive_summary : JSON.stringify(report.executive_summary, null, 2)}
+                  </p>
                 </div>
               )}
             </div>
@@ -465,15 +475,6 @@ export default function App() {
                       >
                         {explanations[`issue-norm-${idx}`]?.loading ? <><Loader2 className="w-3 h-3 animate-spin"/> EXPLAINING...</> : 'AI EXPLAIN ISSUE'}
                       </button>
-
-                      {explanations[`issue-norm-${idx}`] && !explanations[`issue-norm-${idx}`].loading && (
-                        <div className="mt-2 p-3 bg-slate-950 border border-slate-800 rounded text-slate-300">
-                          <div className="font-bold text-blue-400 mb-2">Explanation</div>
-                          <p className="mb-3">{explanations[`issue-norm-${idx}`].explanation}</p>
-                          <div className="font-bold text-blue-400 mb-2">Detailed Fix</div>
-                          <p className="whitespace-pre-wrap font-mono text-[10px] bg-black p-2 rounded">{explanations[`issue-norm-${idx}`].fix_suggestion}</p>
-                        </div>
-                      )}
                     </div>
                   </div>
                 ))
@@ -534,14 +535,18 @@ export default function App() {
                       <Sparkles className="w-6 h-6 text-indigo-400" />
                       <h3 className="text-lg font-bold tracking-widest uppercase text-indigo-400">AI Executive Summary</h3>
                     </div>
-                    <p className="text-slate-300 text-lg leading-relaxed whitespace-pre-wrap text-center">{report.executive_summary}</p>
+                    <p className="text-slate-300 text-lg leading-relaxed whitespace-pre-wrap text-center">
+                      {typeof report.executive_summary === 'string' ? report.executive_summary : JSON.stringify(report.executive_summary, null, 2)}
+                    </p>
                   </div>
                 )}
 
                 <div className={`inline-flex items-center justify-center w-56 h-56 rounded-full border-[12px] text-8xl font-black mb-10 shadow-2xl ${report.score >= 90 ? 'border-emerald-500 text-emerald-400 shadow-emerald-900/40' : report.score >= 70 ? 'border-amber-500 text-amber-500 shadow-amber-900/40' : 'border-rose-500 text-rose-500 shadow-rose-900/40'}`}>
                   {report.score}
                 </div>
-                <p className="text-2xl text-slate-300 max-w-4xl mx-auto leading-relaxed">{report.summary}</p>
+                <p className="text-2xl text-slate-300 max-w-4xl mx-auto leading-relaxed">
+                  {typeof report.summary === 'string' ? report.summary : JSON.stringify(report.summary, null, 2)}
+                </p>
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
@@ -565,7 +570,9 @@ export default function App() {
                           </span>
                         </div>
                         <h4 className="text-xl font-bold text-slate-100 mb-3">{issue.title}</h4>
-                        <p className="text-slate-300 text-base leading-relaxed mb-4 flex-1">{issue.description}</p>
+                        <p className="text-slate-300 text-base leading-relaxed mb-4 flex-1">
+                          {typeof issue.description === 'string' ? issue.description : JSON.stringify(issue.description, null, 2)}
+                        </p>
                         <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700/50 flex flex-col gap-3">
                            <div>
                              <div className="text-xs font-bold text-emerald-400 uppercase tracking-widest mb-2">Recommendation</div>
@@ -579,15 +586,6 @@ export default function App() {
                            >
                              {explanations[`issue-pres-${idx}`]?.loading ? <><Loader2 className="w-3 h-3 animate-spin"/> EXPLAINING...</> : 'AI EXPLAIN ISSUE'}
                            </button>
-
-                           {explanations[`issue-pres-${idx}`] && !explanations[`issue-pres-${idx}`].loading && (
-                             <div className="mt-2 p-4 bg-slate-950 border border-slate-700 rounded-lg text-slate-300 shadow-inner">
-                               <div className="font-bold text-blue-400 mb-2">Detailed Explanation</div>
-                               <p className="mb-4 text-sm leading-relaxed">{explanations[`issue-pres-${idx}`].explanation}</p>
-                               <div className="font-bold text-blue-400 mb-2">Suggested Implementation</div>
-                               <p className="whitespace-pre-wrap font-mono text-[11px] bg-black p-3 rounded border border-slate-800">{explanations[`issue-pres-${idx}`].fix_suggestion}</p>
-                             </div>
-                           )}
                         </div>
                       </div>
                     ))}
@@ -764,6 +762,112 @@ export default function App() {
         </aside>
       )}
 
+      {modalExplanation && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+            <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-950">
+              <h3 className="text-blue-400 font-bold flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5" /> AI Explanation
+              </h3>
+              <button 
+                onClick={() => setModalExplanation(null)}
+                className="text-slate-400 hover:text-white p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
+              <div className="mb-6">
+                <div className="text-xs font-bold text-emerald-400 uppercase tracking-widest mb-2">Original Issue</div>
+                <div className="text-slate-300 bg-slate-950 p-4 rounded border border-slate-800 text-sm">
+                  {typeof modalExplanation.issue === 'string'
+                    ? modalExplanation.issue
+                    : JSON.stringify(modalExplanation.issue, null, 2)}
+                </div>
+              </div>
+
+              <div className="mb-6">
+                <div className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-2">Detailed Explanation</div>
+                <div className="text-slate-200 text-sm leading-relaxed p-4 bg-blue-950/20 border border-blue-900/30 rounded">
+                  {typeof modalExplanation.data?.explanation === 'string' 
+                    ? modalExplanation.data?.explanation 
+                    : JSON.stringify(modalExplanation.data?.explanation, null, 2)}
+                </div>
+              </div>
+
+              {modalExplanation.data?.fix_suggestion && (
+                <div>
+                  <div className="text-xs font-bold text-purple-400 uppercase tracking-widest mb-2">Suggested Implementation</div>
+                  {(() => {
+                    let fixData = modalExplanation.data.fix_suggestion;
+                    if (typeof fixData === 'string') {
+                      try {
+                        fixData = JSON.parse(fixData);
+                      } catch (e) {
+                        // Not JSON, keep as string
+                      }
+                    }
+
+                    if (typeof fixData === 'object' && fixData !== null && fixData.description) {
+                      return (
+                        <div className="space-y-4">
+                          <div className="text-slate-300 text-sm leading-relaxed p-4 bg-slate-950 border border-slate-800 rounded">
+                            {fixData.description}
+                          </div>
+                          {fixData.code_example && (
+                            <div className="space-y-3">
+                              {fixData.code_example.html && (
+                                <div className="overflow-hidden rounded border border-slate-800 bg-black">
+                                  <div className="bg-slate-900 border-b border-slate-800 px-3 py-1.5 text-[10px] font-mono text-slate-400">HTML</div>
+                                  <pre className="text-slate-300 text-[11px] font-mono leading-relaxed p-4 overflow-x-auto">
+                                    {fixData.code_example.html}
+                                  </pre>
+                                </div>
+                              )}
+                              {fixData.code_example.css && (
+                                <div className="overflow-hidden rounded border border-slate-800 bg-black">
+                                  <div className="bg-slate-900 border-b border-slate-800 px-3 py-1.5 text-[10px] font-mono text-slate-400">CSS</div>
+                                  <pre className="text-slate-300 text-[11px] font-mono leading-relaxed p-4 overflow-x-auto">
+                                    {fixData.code_example.css}
+                                  </pre>
+                                </div>
+                              )}
+                              {fixData.code_example.js && (
+                                <div className="overflow-hidden rounded border border-slate-800 bg-black">
+                                  <div className="bg-slate-900 border-b border-slate-800 px-3 py-1.5 text-[10px] font-mono text-slate-400">JavaScript</div>
+                                  <pre className="text-slate-300 text-[11px] font-mono leading-relaxed p-4 overflow-x-auto">
+                                    {fixData.code_example.js}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <pre className="text-slate-300 text-[11px] font-mono leading-relaxed p-4 bg-black border border-slate-800 rounded overflow-x-auto">
+                        {typeof fixData === 'string' ? fixData : JSON.stringify(fixData, null, 2)}
+                      </pre>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 border-t border-slate-800 bg-slate-950 flex justify-end">
+              <button 
+                onClick={() => setModalExplanation(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium rounded transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
     </>
   );

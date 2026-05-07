@@ -120,27 +120,47 @@ export class GeminiService {
       console.log(`[${operationName}] Attempting with model: ${selectedModel}`);
       const result = await operation(selectedModel);
       return result;
-    } catch (error) {
+    } catch (error: any) {
       console.warn(`[${operationName}] Model ${selectedModel} failed:`, error);
       
+      // If the error is a 429 Resource Exhausted/Quota error, throw it immediately
+      if (error && error.message && (error.message.includes('429') || error.message.toLowerCase().includes('quota') || error.message.toLowerCase().includes('exhausted'))) {
+        throw new Error(`API Quota Exceeded: ${error.message}`);
+      }
+      
       console.log(`[${operationName}] Getting available models for fallback...`);
-      const { models } = await this.getAvailableModels();
+      let models = [];
+      try {
+        const result = await this.getAvailableModels();
+        models = result.models;
+      } catch (e: any) {
+         if (e && e.message && (e.message.includes('429') || e.message.toLowerCase().includes('quota'))) {
+            throw new Error(`API Quota Exceeded: ${e.message}`);
+         }
+         throw new Error(`No valid Gemini models available: ${e.message}`);
+      }
       
       const fallbackModels = models
         .map(m => m.name)
         .filter(m => m !== selectedModel);
       
+      let lastError: any = error;
       for (const fallbackModel of fallbackModels) {
         try {
           console.log(`[${operationName}] Attempting fallback with model: ${fallbackModel}`);
           const result = await operation(fallbackModel);
           return result;
-        } catch (fallbackError) {
+        } catch (fallbackError: any) {
+          lastError = fallbackError;
           console.warn(`[${operationName}] Fallback model ${fallbackModel} failed:`, fallbackError);
+          // Stop trying variants if we hit a quota limit
+          if (fallbackError && fallbackError.message && (fallbackError.message.includes('429') || fallbackError.message.toLowerCase().includes('quota'))) {
+            throw new Error(`API Quota Exceeded during fallback: ${fallbackError.message}`);
+          }
         }
       }
       
-      throw new Error("No valid Gemini models available for this API key");
+      throw new Error(`Execution failed. Last error: ${lastError?.message || 'No models available'}`);
     }
   }
 
